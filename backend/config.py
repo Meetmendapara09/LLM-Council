@@ -29,3 +29,8 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Data directory for conversation storage
 DATA_DIR = "data/conversations"
+
+# Memory summarization mode: 'local' for on-device mem0 summarizer, 'model' to use a model
+MEMORY_MODE = os.getenv("MEMORY_MODE", "local")
+# Max sentences for local summary
+MEMORY_LOCAL_MAX_SENTENCES = int(os.getenv("MEMORY_LOCAL_MAX_SENTENCES", "3"))

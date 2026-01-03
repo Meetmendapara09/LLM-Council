@@ -34,7 +34,12 @@ def create_conversation(conversation_id: str) -> Dict[str, Any]:
         "id": conversation_id,
         "created_at": datetime.utcnow().isoformat(),
         "title": "New Conversation",
-        "messages": []
+        "messages": [],
+        # Lightweight per-conversation memory
+        "memory": {
+            "short": [],  # recent short entries
+            "summary": ""  # concise long-term summary
+        }
     }
 
     # Save to file
@@ -121,7 +126,8 @@ def add_user_message(conversation_id: str, content: str):
 
     conversation["messages"].append({
         "role": "user",
-        "content": content
+        "content": content,
+        "created_at": datetime.utcnow().isoformat()
     })
 
     save_conversation(conversation)
@@ -150,7 +156,8 @@ def add_assistant_message(
         "role": "assistant",
         "stage1": stage1,
         "stage2": stage2,
-        "stage3": stage3
+        "stage3": stage3,
+        "created_at": datetime.utcnow().isoformat()
     })
 
     save_conversation(conversation)

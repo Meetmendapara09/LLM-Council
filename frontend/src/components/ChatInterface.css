@@ -161,3 +161,17 @@
   background: #ccc;
   border-color: #ccc;
 }
+
+/* Message metadata (label + time) */
+.message-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.message-time {
+  font-size: 12px;
+  color: #888;
+  font-weight: 500;
+}

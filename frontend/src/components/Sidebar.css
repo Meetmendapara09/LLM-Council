@@ -76,3 +76,81 @@
   color: #999;
   font-size: 12px;
 }
+
+/* Memory panel styles */
+.memory-panel {
+  padding: 12px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.memory-panel h3 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+}
+
+.memory-content {
+  font-size: 13px;
+  color: #333;
+}
+
+.memory-summary {
+  margin-bottom: 8px;
+}
+
+.memory-short ul {
+  margin: 6px 0 8px 16px;
+  padding: 0;
+}
+
+.memory-actions {
+  margin-top: 8px;
+}
+
+.memory-actions button {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #ddd;
+  cursor: pointer;
+}
+
+.memory-actions button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.confirm-clear {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confirm-clear .confirm-yes {
+  background: #e53935;
+  color: white;
+  border: 1px solid #e53935;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.confirm-clear .confirm-cancel {
+  background: #fff;
+  border: 1px solid #ddd;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.memory-mode {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.memory-mode select {
+  margin-left: 8px;
+  padding: 4px 6px;
+}
+
+.muted {
+  color: #999;
+  font-size: 13px;
+}

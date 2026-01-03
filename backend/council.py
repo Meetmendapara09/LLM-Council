@@ -33,14 +33,16 @@ async def stage1_collect_responses(messages: List[Dict[str, Any]]) -> List[Dict[
 
 async def stage2_collect_rankings(
     messages: List[Dict[str, Any]],
-    stage1_results: List[Dict[str, Any]]
+    stage1_results: List[Dict[str, Any]],
+    memory_summary: str = ""
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
-    Stage 2: Each model ranks the anonymized responses using conversation context.
+    Stage 2: Each model ranks the anonymized responses using conversation context and memory.
 
     Args:
         messages: The conversation messages (including the latest user message)
         stage1_results: Results from Stage 1
+        memory_summary: Optional concise memory summary to include for context
 
     Returns:
         Tuple of (rankings list, label_to_model mapping)
@@ -74,9 +76,12 @@ async def stage2_collect_rankings(
 
     conversation_text = "\n".join(conversation_history)
 
+    # Include memory summary if available
+    memory_block = f"Memory summary: {memory_summary}\n\n" if memory_summary else ""
+
     ranking_prompt = f"""You are evaluating different responses to the user's latest question.
 
-Conversation history:
+{memory_block}Conversation history:
 {conversation_text}
 
 Latest question: {user_query}
@@ -120,7 +125,8 @@ Now provide your evaluation and ranking:"""
 async def stage3_synthesize_final(
     messages: List[Dict[str, Any]],
     stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]]
+    stage2_results: List[Dict[str, Any]],
+    memory_summary: str = ""
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response using conversation context.
@@ -157,9 +163,11 @@ async def stage3_synthesize_final(
             conversation_history.append(f"Assistant: {content}")
     conversation_text = "\n".join(conversation_history)
 
+    memory_block = f"Memory summary: {memory_summary}\n\n" if memory_summary else ""
+
     chairman_prompt = f"""You are the Chairman of an LLM Council. Multiple AI models have provided responses to a user's question, and then ranked each other's responses.
 
-Conversation history:
+{memory_block}Conversation history:
 {conversation_text}
 
 Latest question: {latest_user}
@@ -315,12 +323,13 @@ Title:"""
     return title
 
 
-async def run_full_council(messages: List[Dict[str, Any]]) -> Tuple[List, List, Dict, Dict]:
+async def run_full_council(messages: List[Dict[str, Any]], memory_summary: str = "") -> Tuple[List, List, Dict, Dict]:
     """
-    Run the complete 3-stage council process with conversation context.
+    Run the complete 3-stage council process with conversation context and memory.
 
     Args:
         messages: The conversation messages (including the latest user message)
+        memory_summary: Optional concise memory summary to include for context
 
     Returns:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata)
@@ -336,7 +345,7 @@ async def run_full_council(messages: List[Dict[str, Any]]) -> Tuple[List, List, 
         }, {}
 
     # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(messages, stage1_results)
+    stage2_results, label_to_model = await stage2_collect_rankings(messages, stage1_results, memory_summary)
 
     # Calculate aggregate rankings
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
@@ -345,7 +354,8 @@ async def run_full_council(messages: List[Dict[str, Any]]) -> Tuple[List, List, 
     stage3_result = await stage3_synthesize_final(
         messages,
         stage1_results,
-        stage2_results
+        stage2_results,
+        memory_summary
     )
 
     # Prepare metadata

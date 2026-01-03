@@ -67,6 +67,59 @@ export const api = {
   },
 
   /**
+   * Get the memory for a conversation (short entries + summary)
+   */
+  async getMemory(conversationId) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/memory`
+    );
+    if (!response.ok) {
+      throw new Error('Failed to get memory');
+    }
+    return response.json();
+  },
+
+  /**
+   * Clear a conversation's memory
+   */
+  async clearMemory(conversationId) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/memory/clear`,
+      { method: 'POST' }
+    );
+    if (!response.ok) {
+      throw new Error('Failed to clear memory');
+    }
+    return response.json();
+  },
+
+  /**
+   * Get the runtime memory mode
+   */
+  async getMemoryMode() {
+    const response = await fetch(`${API_BASE}/api/memory/mode`);
+    if (!response.ok) {
+      throw new Error('Failed to get memory mode');
+    }
+    return response.json();
+  },
+
+  /**
+   * Set the runtime memory mode (body: { mode: 'local'|'model' })
+   */
+  async setMemoryMode(mode) {
+    const response = await fetch(`${API_BASE}/api/memory/mode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    if (!response.ok) {
+      throw new Error('Failed to set memory mode');
+    }
+    return response.json();
+  },
+
+  /**
    * Send a message and receive streaming updates.
    * @param {string} conversationId - The conversation ID
    * @param {string} content - The message content

@@ -37,6 +37,24 @@ export default function ChatInterface({
     }
   };
 
+  // Return a compact relative time string like "2m ago"
+  const timeAgo = (iso) => {
+    if (!iso) return '';
+    // eslint-disable-next-line react-hooks/purity
+    const diff = Date.now() - new Date(iso).getTime();
+    const sec = Math.floor(diff / 1000);
+    if (sec < 10) return 'just now';
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const days = Math.floor(hr / 24);
+    if (days < 7) return `${days}d ago`;
+    const d = new Date(iso);
+    return d.toLocaleDateString();
+  };
+
   if (!conversation) {
     return (
       <div className="chat-interface">
@@ -61,7 +79,10 @@ export default function ChatInterface({
             <div key={index} className="message-group">
               {msg.role === 'user' ? (
                 <div className="user-message">
-                  <div className="message-label">You</div>
+                  <div className="message-meta">
+                    <div className="message-label">You</div>
+                    <div className="message-time">{timeAgo(msg.created_at)}</div>
+                  </div>
                   <div className="message-content">
                     <div className="markdown-content">
                       <ReactMarkdown>{msg.content}</ReactMarkdown>
@@ -70,7 +91,10 @@ export default function ChatInterface({
                 </div>
               ) : (
                 <div className="assistant-message">
-                  <div className="message-label">LLM Council</div>
+                  <div className="message-meta">
+                    <div className="message-label">LLM Council</div>
+                    <div className="message-time">{timeAgo(msg.created_at)}</div>
+                  </div>
 
                   {/* Stage 1 */}
                   {msg.loading?.stage1 && (

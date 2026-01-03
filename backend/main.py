@@ -10,6 +10,7 @@ import json
 import asyncio
 
 from . import storage
+from . import memory
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
 app = FastAPI(title="LLM Council API")
@@ -79,6 +80,52 @@ async def get_conversation(conversation_id: str):
     return conversation
 
 
+@app.get("/api/conversations/{conversation_id}/memory")
+async def get_conversation_memory(conversation_id: str):
+    """Return the memory (short entries and summary) for a conversation."""
+    try:
+        mem = memory.get_memory(conversation_id)
+        return mem
+    except Exception:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+
+@app.post("/api/conversations/{conversation_id}/memory/clear")
+async def clear_conversation_memory(conversation_id: str):
+    """Clear a conversation's memory."""
+    try:
+        memory.clear_memory(conversation_id)
+        return {"status": "ok"}
+    except Exception:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+
+@app.get("/api/memory/mode")
+async def get_memory_mode():
+    """Return the current runtime memory mode and local settings."""
+    from .config import MEMORY_LOCAL_MAX_SENTENCES
+    try:
+        mode = memory.get_runtime_mode()
+        return {"mode": mode, "local_max_sentences": MEMORY_LOCAL_MAX_SENTENCES}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unable to retrieve memory mode")
+
+
+@app.post("/api/memory/mode")
+async def set_memory_mode(payload: Dict[str, str]):
+    """Set the runtime memory mode. Body: {"mode": "local"|"model"} """
+    mode = payload.get("mode")
+    if mode not in ("local", "model"):
+        raise HTTPException(status_code=400, detail="mode must be 'local' or 'model'")
+    try:
+        memory.set_runtime_mode(mode)
+        return {"status": "ok", "mode": mode}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unable to set memory mode")
+
+
 @app.post("/api/conversations/{conversation_id}/message")
 async def send_message(conversation_id: str, request: SendMessageRequest):
     """
@@ -117,8 +164,15 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     # Append the new user message (most recent)
     messages.append({"role": "user", "content": request.content})
 
-    # Run the 3-stage council process with conversation context
-    stage1_results, stage2_results, stage3_result, metadata = await run_full_council(messages)
+    # Get existing memory summary and pass it into the council
+    try:
+        mem = memory.get_memory(conversation_id)
+        memory_summary = mem.get("summary", "")
+    except Exception:
+        memory_summary = ""
+
+    # Run the 3-stage council process with conversation context and memory
+    stage1_results, stage2_results, stage3_result, metadata = await run_full_council(messages, memory_summary)
 
     # Add assistant message with all stages
     storage.add_assistant_message(
@@ -127,6 +181,17 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         stage2_results,
         stage3_result
     )
+
+    # Update the conversation-level memory in the background (do not block the response)
+    try:
+        asyncio.create_task(memory.add_exchange_and_update_summary(
+            conversation_id,
+            request.content,
+            stage3_result.get("response", "") if isinstance(stage3_result, dict) else ""
+        ))
+    except Exception:
+        # Non-fatal if memory update fails
+        pass
 
     # Return the complete response with metadata
     return {
@@ -173,6 +238,13 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": request.content})
 
+            # Get existing memory summary and pass it into the council
+            try:
+                mem = memory.get_memory(conversation_id)
+                memory_summary = mem.get("summary", "")
+            except Exception:
+                memory_summary = ""
+
             # Stage 1: Collect responses
             yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
             stage1_results = await stage1_collect_responses(messages)
@@ -180,13 +252,13 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
             # Stage 2: Collect rankings
             yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            stage2_results, label_to_model = await stage2_collect_rankings(messages, stage1_results)
+            stage2_results, label_to_model = await stage2_collect_rankings(messages, stage1_results, memory_summary)
             aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
             yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
 
             # Stage 3: Synthesize final answer
             yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-            stage3_result = await stage3_synthesize_final(messages, stage1_results, stage2_results)
+            stage3_result = await stage3_synthesize_final(messages, stage1_results, stage2_results, memory_summary)
             yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
             # Wait for title generation if it was started
@@ -202,6 +274,16 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 stage2_results,
                 stage3_result
             )
+
+            # Update memory in the background
+            try:
+                asyncio.create_task(memory.add_exchange_and_update_summary(
+                    conversation_id,
+                    request.content,
+                    stage3_result.get("response", "") if isinstance(stage3_result, dict) else ""
+                ))
+            except Exception:
+                pass
 
             # Send completion event
             yield f"data: {json.dumps({'type': 'complete'})}\n\n"
