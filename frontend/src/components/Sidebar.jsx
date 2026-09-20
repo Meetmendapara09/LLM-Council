@@ -15,8 +15,10 @@ export default function Sidebar({
   const [confirmClear, setConfirmClear] = useState(false);
 
   useEffect(() => {
+    // Nothing to load without a selection. (The panel render is already
+    // gated on currentConversationId, so no synchronous state reset is needed
+    // here — and the linter forbids setState directly inside effects.)
     if (!currentConversationId) {
-      setMemory(null);
       return;
     }
 

@@ -20,18 +20,6 @@ function App() {
   // AbortController for the in-flight stream, if any.
   const abortControllerRef = useRef(null);
 
-  // Load conversations on mount
-  useEffect(() => {
-    loadConversations();
-  }, []);
-
-  // Load conversation details when selected
-  useEffect(() => {
-    if (currentConversationId) {
-      loadConversation(currentConversationId);
-    }
-  }, [currentConversationId]);
-
   const loadConversations = async () => {
     try {
       const convs = await api.listConversations();
@@ -41,14 +29,35 @@ function App() {
     }
   };
 
-  const loadConversation = async (id) => {
-    try {
-      const conv = await api.getConversation(id);
-      setCurrentConversation(conv);
-    } catch (error) {
-      console.error('Failed to load conversation:', error);
+  // Load conversations on mount (fetch inlined: the linter only permits
+  // setState inside effects via a locally defined async function)
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const convs = await api.listConversations();
+        setConversations(convs);
+      } catch (error) {
+        console.error('Failed to load conversations:', error);
+      }
+    };
+    load();
+  }, []);
+
+  // Load conversation details when selected
+  useEffect(() => {
+    if (!currentConversationId) {
+      return;
     }
-  };
+    const load = async () => {
+      try {
+        const conv = await api.getConversation(currentConversationId);
+        setCurrentConversation(conv);
+      } catch (error) {
+        console.error('Failed to load conversation:', error);
+      }
+    };
+    load();
+  }, [currentConversationId]);
 
   const handleNewConversation = async () => {
     try {
