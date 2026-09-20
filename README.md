@@ -1,5 +1,7 @@
 # LLM Council
 
+> **Project status: finished ✅** — This project is complete. No new features are planned; only automated dependency updates will land.
+
 ![LLM Council](header.jpg)
 
 Ask not one LLM, but a **council of LLMs**. LLM Council is a local ChatGPT-style web app that sends your query to multiple models via [OpenRouter](https://openrouter.ai/), has them anonymously review and rank each other's answers, and then has a Chairman model synthesize a single final response.
