@@ -3,17 +3,38 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any
+from contextlib import asynccontextmanager
 import uuid
 import json
 import asyncio
+import os
 
 from . import storage
 from . import memory
-from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
+from . import config
+from .council import (
+    run_full_council,
+    generate_conversation_title,
+    stage1_collect_responses,
+    stage2_collect_rankings,
+    stage3_synthesize_final,
+    calculate_aggregate_rankings,
+)
 
-app = FastAPI(title="LLM Council API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    key = os.getenv("OPENROUTER_API_KEY") or config.OPENROUTER_API_KEY
+    if not key:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not set - configure it via environment before starting the server."
+        )
+    yield
+
+
+app = FastAPI(title="LLM Council API", lifespan=lifespan)
 
 # Enable CORS for local development
 app.add_middleware(
@@ -27,16 +48,19 @@ app.add_middleware(
 
 class CreateConversationRequest(BaseModel):
     """Request to create a new conversation."""
+
     pass
 
 
 class SendMessageRequest(BaseModel):
     """Request to send a message in a conversation."""
-    content: str
+
+    content: str = Field(min_length=1, max_length=8000)
 
 
 class ConversationMetadata(BaseModel):
     """Conversation metadata for list view."""
+
     id: str
     created_at: str
     title: str
@@ -45,6 +69,7 @@ class ConversationMetadata(BaseModel):
 
 class Conversation(BaseModel):
     """Full conversation with all messages."""
+
     id: str
     created_at: str
     title: str
@@ -80,6 +105,14 @@ async def get_conversation(conversation_id: str):
     return conversation
 
 
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a conversation."""
+    if not storage.delete_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"status": "ok"}
+
+
 @app.get("/api/conversations/{conversation_id}/memory")
 async def get_conversation_memory(conversation_id: str):
     """Return the memory (short entries and summary) for a conversation."""
@@ -104,6 +137,7 @@ async def clear_conversation_memory(conversation_id: str):
 async def get_memory_mode():
     """Return the current runtime memory mode and local settings."""
     from .config import MEMORY_LOCAL_MAX_SENTENCES
+
     try:
         mode = memory.get_runtime_mode()
         return {"mode": mode, "local_max_sentences": MEMORY_LOCAL_MAX_SENTENCES}
@@ -113,7 +147,7 @@ async def get_memory_mode():
 
 @app.post("/api/memory/mode")
 async def set_memory_mode(payload: Dict[str, str]):
-    """Set the runtime memory mode. Body: {"mode": "local"|"model"} """
+    """Set the runtime memory mode. Body: {"mode": "local"|"model"}"""
     mode = payload.get("mode")
     if mode not in ("local", "model"):
         raise HTTPException(status_code=400, detail="mode must be 'local' or 'model'")
@@ -132,37 +166,46 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     Send a message and run the 3-stage council process.
     Returns the complete response with all stages.
     """
-    # Check if conversation exists
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content must not be blank")
 
-    # Check if this is the first message
-    is_first_message = len(conversation["messages"]) == 0
+    # Guard the initial read-modify-write under the per-conversation lock.
+    # The long council execution itself runs outside the lock.
+    async with storage.get_lock(conversation_id):
+        conversation = storage.get_conversation(conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Add user message
-    storage.add_user_message(conversation_id, request.content)
+        # Check if this is the first message
+        is_first_message = len(conversation["messages"]) == 0
+
+        # Add user message
+        storage.add_user_message(conversation_id, content)
 
     # If this is the first message, generate a title
     if is_first_message:
-        title = await generate_conversation_title(request.content)
-        storage.update_conversation_title(conversation_id, title)
+        title = await generate_conversation_title(content)
+        async with storage.get_lock(conversation_id):
+            storage.update_conversation_title(conversation_id, title)
 
     # Build message list for the council from conversation history + new user message
     # We include prior assistant final responses (stage3) as assistant messages so models have context
     messages = []
     for msg in conversation["messages"]:
-        if msg.get('role') == 'user':
-            messages.append({"role": "user", "content": msg.get('content', '')})
-        elif msg.get('role') == 'assistant':
+        if msg.get("role") == "user":
+            messages.append({"role": "user", "content": msg.get("content", "")})
+        elif msg.get("role") == "assistant":
             # Use the Stage 3 synthesized answer as assistant message content when available
-            stage3 = msg.get('stage3') or {}
-            assistant_content = stage3.get('response', '') if isinstance(stage3, dict) else ''
+            stage3 = msg.get("stage3") or {}
+            assistant_content = (
+                stage3.get("response", "") if isinstance(stage3, dict) else ""
+            )
             if assistant_content:
                 messages.append({"role": "assistant", "content": assistant_content})
 
     # Append the new user message (most recent)
-    messages.append({"role": "user", "content": request.content})
+    messages.append({"role": "user", "content": content})
 
     # Get existing memory summary and pass it into the council
     try:
@@ -172,23 +215,27 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         memory_summary = ""
 
     # Run the 3-stage council process with conversation context and memory
-    stage1_results, stage2_results, stage3_result, metadata = await run_full_council(messages, memory_summary)
+    stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
+        messages, memory_summary
+    )
 
     # Add assistant message with all stages
-    storage.add_assistant_message(
-        conversation_id,
-        stage1_results,
-        stage2_results,
-        stage3_result
-    )
+    async with storage.get_lock(conversation_id):
+        storage.add_assistant_message(
+            conversation_id, stage1_results, stage2_results, stage3_result
+        )
 
     # Update the conversation-level memory in the background (do not block the response)
     try:
-        asyncio.create_task(memory.add_exchange_and_update_summary(
-            conversation_id,
-            request.content,
-            stage3_result.get("response", "") if isinstance(stage3_result, dict) else ""
-        ))
+        asyncio.create_task(
+            memory.add_exchange_and_update_summary(
+                conversation_id,
+                content,
+                stage3_result.get("response", "")
+                if isinstance(stage3_result, dict)
+                else "",
+            )
+        )
     except Exception:
         # Non-fatal if memory update fails
         pass
@@ -198,7 +245,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         "stage1": stage1_results,
         "stage2": stage2_results,
         "stage3": stage3_result,
-        "metadata": metadata
+        "metadata": metadata,
     }
 
 
@@ -208,6 +255,10 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     Send a message and stream the 3-stage council process.
     Returns Server-Sent Events as each stage completes.
     """
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content must not be blank")
+
     # Check if conversation exists
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
@@ -218,25 +269,30 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
     async def event_generator():
         try:
-            # Add user message
-            storage.add_user_message(conversation_id, request.content)
+            # Add user message (read-modify-write guarded by lock)
+            async with storage.get_lock(conversation_id):
+                storage.add_user_message(conversation_id, content)
 
             # Start title generation in parallel (don't await yet)
             title_task = None
             if is_first_message:
-                title_task = asyncio.create_task(generate_conversation_title(request.content))
+                title_task = asyncio.create_task(generate_conversation_title(content))
 
             # Build message list for the council using conversation history + new user message
             messages = []
             for msg in conversation["messages"]:
-                if msg.get('role') == 'user':
-                    messages.append({"role": "user", "content": msg.get('content', '')})
-                elif msg.get('role') == 'assistant':
-                    stage3 = msg.get('stage3') or {}
-                    assistant_content = stage3.get('response', '') if isinstance(stage3, dict) else ''
+                if msg.get("role") == "user":
+                    messages.append({"role": "user", "content": msg.get("content", "")})
+                elif msg.get("role") == "assistant":
+                    stage3 = msg.get("stage3") or {}
+                    assistant_content = (
+                        stage3.get("response", "") if isinstance(stage3, dict) else ""
+                    )
                     if assistant_content:
-                        messages.append({"role": "assistant", "content": assistant_content})
-            messages.append({"role": "user", "content": request.content})
+                        messages.append(
+                            {"role": "assistant", "content": assistant_content}
+                        )
+            messages.append({"role": "user", "content": content})
 
             # Get existing memory summary and pass it into the council
             try:
@@ -252,36 +308,45 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
             # Stage 2: Collect rankings
             yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            stage2_results, label_to_model = await stage2_collect_rankings(messages, stage1_results, memory_summary)
-            aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+            stage2_results, label_to_model = await stage2_collect_rankings(
+                messages, stage1_results, memory_summary
+            )
+            aggregate_rankings = calculate_aggregate_rankings(
+                stage2_results, label_to_model
+            )
             yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
 
             # Stage 3: Synthesize final answer
             yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-            stage3_result = await stage3_synthesize_final(messages, stage1_results, stage2_results, memory_summary)
+            stage3_result = await stage3_synthesize_final(
+                messages, stage1_results, stage2_results, memory_summary
+            )
             yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
             # Wait for title generation if it was started
             if title_task:
                 title = await title_task
-                storage.update_conversation_title(conversation_id, title)
+                async with storage.get_lock(conversation_id):
+                    storage.update_conversation_title(conversation_id, title)
                 yield f"data: {json.dumps({'type': 'title_complete', 'data': {'title': title}})}\n\n"
 
             # Save complete assistant message
-            storage.add_assistant_message(
-                conversation_id,
-                stage1_results,
-                stage2_results,
-                stage3_result
-            )
+            async with storage.get_lock(conversation_id):
+                storage.add_assistant_message(
+                    conversation_id, stage1_results, stage2_results, stage3_result
+                )
 
             # Update memory in the background
             try:
-                asyncio.create_task(memory.add_exchange_and_update_summary(
-                    conversation_id,
-                    request.content,
-                    stage3_result.get("response", "") if isinstance(stage3_result, dict) else ""
-                ))
+                asyncio.create_task(
+                    memory.add_exchange_and_update_summary(
+                        conversation_id,
+                        content,
+                        stage3_result.get("response", "")
+                        if isinstance(stage3_result, dict)
+                        else "",
+                    )
+                )
             except Exception:
                 pass
 
@@ -298,10 +363,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-        }
+        },
     )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8001)

@@ -5,10 +5,14 @@ that can be used to provide persistent context across turns.
 """
 
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from . import storage
 from .openrouter import query_model
-from .config import CHAIRMAN_MODEL, MEMORY_MODE as DEFAULT_MEMORY_MODE, MEMORY_LOCAL_MAX_SENTENCES
+from .config import (
+    CHAIRMAN_MODEL,
+    MEMORY_MODE as DEFAULT_MEMORY_MODE,
+    MEMORY_LOCAL_MAX_SENTENCES,
+)
 
 # Runtime memory mode can be toggled at runtime via API
 RUNTIME_MEMORY_MODE = DEFAULT_MEMORY_MODE
@@ -60,7 +64,7 @@ def add_to_short_memory(conversation_id: str, role: str, content: str):
     entry = {
         "role": role,
         "content": content,
-        "at": datetime.utcnow().isoformat()
+        "at": datetime.now(timezone.utc).isoformat(),
     }
 
     conv["memory"]["short"].append(entry)
@@ -73,7 +77,7 @@ def add_to_short_memory(conversation_id: str, role: str, content: str):
 async def update_memory_summary(
     conversation_id: str,
     summarization_model: Optional[str] = None,
-    timeout: float = 30.0
+    timeout: float = 30.0,
 ) -> str:
     """Regenerate the long-term memory summary.
 
@@ -105,37 +109,54 @@ async def update_memory_summary(
         use_local = True
     else:
         # use runtime mode (set via API or env)
-        use_local = (RUNTIME_MEMORY_MODE == "local")
+        use_local = RUNTIME_MEMORY_MODE == "local"
 
     if use_local:
         # Simple extractive / heuristic summarizer suitable for on-device use
         def _split_sentences(text: str):
             import re
+
             parts = re.split(r"(?<=[.!?])\s+", text.strip())
             return [p.strip() for p in parts if p.strip()]
 
         candidates = []
         # Build candidate sentences with recency info
         for idx, item in enumerate(short):
-            sentences = _split_sentences(item.get('content', ''))
+            sentences = _split_sentences(item.get("content", ""))
             for s in sentences:
-                candidates.append({
-                    'sentence': s,
-                    'role': item.get('role'),
-                    'recency': idx  # later items have higher idx
-                })
+                candidates.append(
+                    {
+                        "sentence": s,
+                        "role": item.get("role"),
+                        "recency": idx,  # later items have higher idx
+                    }
+                )
 
         # Scoring heuristics
         keywords = [
-            'prefer', 'preference', 'favorite', 'like', 'dislike', 'my name is', 'i am', 'i have',
-            'i live', 'i work', 'born', 'located', 'from', 'project', 'goal', 'task'
+            "prefer",
+            "preference",
+            "favorite",
+            "like",
+            "dislike",
+            "my name is",
+            "i am",
+            "i have",
+            "i live",
+            "i work",
+            "born",
+            "located",
+            "from",
+            "project",
+            "goal",
+            "task",
         ]
 
         def score_sentence(c):
-            s = c['sentence'].lower()
+            s = c["sentence"].lower()
             score = 0
             # personal statements more likely (contain 'i' or 'my')
-            if ' i ' in f" {s} " or s.startswith('i ') or 'my ' in s:
+            if " i " in f" {s} " or s.startswith("i ") or "my " in s:
                 score += 3
             # keywords
             for kw in keywords:
@@ -145,40 +166,47 @@ async def update_memory_summary(
             if 10 < len(s) < 300:
                 score += 1
             # recency boost
-            score += (c['recency'] / max(1, len(short)))
+            score += c["recency"] / max(1, len(short))
             return score
 
         scored = [dict(c, score=score_sentence(c)) for c in candidates]
         # Sort by score desc, then by recency desc
-        scored.sort(key=lambda x: (x['score'], x['recency']), reverse=True)
+        scored.sort(key=lambda x: (x["score"], x["recency"]), reverse=True)
 
         # Build unique sentences up to limit
         seen = set()
         chosen = []
         for c in scored:
-            s = c['sentence'].strip()
+            s = c["sentence"].strip()
             # normalize to avoid duplicates
             key = s.lower()
             if key in seen:
                 continue
-            chosen.append(s if s.endswith('.') or s.endswith('!') or s.endswith('?') else s + '.')
+            chosen.append(
+                s if s.endswith(".") or s.endswith("!") or s.endswith("?") else s + "."
+            )
             seen.add(key)
             if len(chosen) >= MEMORY_LOCAL_MAX_SENTENCES:
                 break
 
-        new_summary = ' '.join(chosen).strip()
+        new_summary = " ".join(chosen).strip()
 
         if new_summary:
-            conv["memory"]["summary"] = new_summary
-            storage.save_conversation(conv)
+            async with storage.get_lock(conversation_id):
+                conv_refresh = storage.get_conversation(conversation_id)
+                if conv_refresh is None:
+                    raise ValueError(f"Conversation {conversation_id} not found")
+                _ensure_memory_structure(conv_refresh)
+                conv_refresh["memory"]["summary"] = new_summary
+                storage.save_conversation(conv_refresh)
             return new_summary
 
         return existing_summary
 
     # Fallback: model-based summarization (unchanged)
-    recent_text = "\n".join([
-        f"{item['role'].capitalize()}: {item['content']}" for item in short
-    ])
+    recent_text = "\n".join(
+        [f"{item['role'].capitalize()}: {item['content']}" for item in short]
+    )
 
     summary_prompt = f"""You are creating a concise memory summary for a conversation.
 Keep it to 1-3 short sentences. Include user preferences, ongoing tasks, or facts
@@ -202,8 +230,13 @@ New concise summary:"""
 
         new_summary = response.get("content", "").strip()
         if new_summary:
-            conv["memory"]["summary"] = new_summary
-            storage.save_conversation(conv)
+            async with storage.get_lock(conversation_id):
+                conv_refresh = storage.get_conversation(conversation_id)
+                if conv_refresh is None:
+                    raise ValueError(f"Conversation {conversation_id} not found")
+                _ensure_memory_structure(conv_refresh)
+                conv_refresh["memory"]["summary"] = new_summary
+                storage.save_conversation(conv_refresh)
             return new_summary
 
     except Exception:
@@ -217,12 +250,16 @@ async def add_exchange_and_update_summary(
     conversation_id: str,
     user_message: str,
     assistant_response: str,
-    summarization_model: Optional[str] = None
+    summarization_model: Optional[str] = None,
 ) -> str:
     """Convenience method to add the latest exchange and update the summary."""
-    add_to_short_memory(conversation_id, "user", user_message)
-    if assistant_response:
-        add_to_short_memory(conversation_id, "assistant", assistant_response)
+    # Guard the short-memory read-modify-write sequence; sync helpers
+    # themselves stay sync (asyncio.Lock can't be used from sync code),
+    # so the lock is held here by this async caller.
+    async with storage.get_lock(conversation_id):
+        add_to_short_memory(conversation_id, "user", user_message)
+        if assistant_response:
+            add_to_short_memory(conversation_id, "assistant", assistant_response)
 
     summary = await update_memory_summary(conversation_id, summarization_model)
     return summary
