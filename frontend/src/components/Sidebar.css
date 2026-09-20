@@ -55,6 +55,7 @@
   border-radius: 6px;
   cursor: pointer;
   transition: background 0.2s;
+  position: relative;
 }
 
 .conversation-item:hover {
@@ -75,6 +76,30 @@
 .conversation-meta {
   color: #999;
   font-size: 12px;
+}
+
+.conversation-delete-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  border: none;
+  background: transparent;
+  color: #999;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.conversation-item:hover .conversation-delete-btn {
+  display: block;
+}
+
+.conversation-delete-btn:hover {
+  background: #f3c1c1;
+  color: #a00;
 }
 
 /* Memory panel styles */

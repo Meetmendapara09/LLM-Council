@@ -7,6 +7,7 @@ export default function Sidebar({
   currentConversationId,
   onSelectConversation,
   onNewConversation,
+  onDeleteConversation,
 }) {
   const [memory, setMemory] = useState(null);
   const [modeInfo, setModeInfo] = useState(null);
@@ -48,18 +49,6 @@ export default function Sidebar({
     loadMode();
   }, []);
 
-  const handleClearMemory = async (e) => {
-    e.stopPropagation();
-    if (!currentConversationId) return;
-    try {
-      await api.clearMemory(currentConversationId);
-      const m = await api.getMemory(currentConversationId);
-      setMemory(m);
-    } catch (err) {
-      console.error('Failed to clear memory:', err);
-    }
-  };
-
   const handleSetMode = async (newMode) => {
     try {
       await api.setMemoryMode(newMode);
@@ -97,6 +86,19 @@ export default function Sidebar({
               <div className="conversation-meta">
                 {conv.message_count} messages
               </div>
+              <button
+                className="conversation-delete-btn"
+                title="Delete conversation"
+                aria-label={`Delete ${conv.title || 'conversation'}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (window.confirm('Delete this conversation?')) {
+                    onDeleteConversation?.(conv.id);
+                  }
+                }}
+              >
+                ×
+              </button>
             </div>
           ))
         )}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
 import Stage3 from './Stage3';
@@ -9,9 +10,14 @@ export default function ChatInterface({
   conversation,
   onSendMessage,
   isLoading,
+  error,
+  onCancel,
+  onCancelStream,
 }) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef(null);
+
+  const handleCancel = onCancel ?? onCancelStream;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -30,7 +36,7 @@ export default function ChatInterface({
   };
 
   const handleKeyDown = (e) => {
-    // Submit on Enter (without Shift)
+    // Submit on Enter (without Shift); Shift+Enter inserts a newline
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
@@ -85,7 +91,9 @@ export default function ChatInterface({
                   </div>
                   <div className="message-content">
                     <div className="markdown-content">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {msg.content}
+                      </ReactMarkdown>
                     </div>
                   </div>
                 </div>
@@ -134,6 +142,12 @@ export default function ChatInterface({
           ))
         )}
 
+        {error && (
+          <div className="error-banner" role="alert">
+            {error}
+          </div>
+        )}
+
         {isLoading && (
           <div className="loading-indicator">
             <div className="spinner"></div>
@@ -154,13 +168,23 @@ export default function ChatInterface({
           disabled={isLoading}
           rows={3}
         />
-        <button
-          type="submit"
-          className="send-button"
-          disabled={!input.trim() || isLoading}
-        >
-          Send
-        </button>
+        {isLoading ? (
+          <button
+            type="button"
+            className="cancel-button"
+            onClick={handleCancel}
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="send-button"
+            disabled={!input.trim() || isLoading}
+          >
+            Send
+          </button>
+        )}
       </form>
     </div>
   );
